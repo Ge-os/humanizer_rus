@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> None:
     text = Path(args.input).read_text(encoding="utf-8")
     processor = TextProcessor()
     provider = SynonymProvider(args.synonyms)
-    ranker = build_ranker(args.model, models_dir=args.models_dir, corpus=args.corpus)
+    ranker = build_ranker(args.model, models_dir=args.models_dir, corpus=args.corpus, synonyms=provider)
     policy = ReplacementPolicy(threshold=args.threshold, mode=args.mode, seed=args.seed)
     humanizer = Humanizer(
         processor, provider, ranker, policy,

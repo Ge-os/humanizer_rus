@@ -25,7 +25,7 @@ python -m app.cli --input in.txt --output out.txt --model lesk --n 2 --mode 2 --
 | флаг | по умолч. | описание |
 |---|---|---|
 | `--input`, `--output` | — | файлы на вход/выход (utf-8) |
-| `--model` | `ngram` | модель ранжирования: `lesk`, `ngram`, `pmi` |
+| `--model` | `ngram` | модель ранжирования: `lesk`, `ngram`, `pmi`, `nb`, `logreg`, `svm`, `rf`, `gbm`, `lsa` |
 | `--n` | 1 | заменять каждый n-й значимый токен |
 | `--mode` | 2 | 1 — случайный из прошедших порог, 2 — самый вероятный, 3 — наименее вероятный (максимум перплексии) |
 | `--threshold` | 0.5 | порог вероятности кандидата для замены |
@@ -47,8 +47,10 @@ python -m app.cli --input in.txt --output out.txt --model lesk --n 2 --mode 2 --
 
 - `app/text.py` — токенизация, стоп-слова NLTK, морфология pymorphy3.
 - `app/synonyms.py` — словарь синонимов из parquet (по слову и лемме, с кэшем индекса).
-- `app/rankers.py` — `BaseRanker` и реализации (`lesk`, `ngram`, `pmi`); модель меняется
-  одним флагом `--model` через `REGISTRY`.
+- `app/rankers.py` — `BaseRanker` и реализации: `lesk`, `ngram`, `pmi`, sklearn-семейство
+  (`nb`, `logreg`, `svm`, `rf`, `gbm`), `lsa`; модель меняется одним флагом `--model`
+  через `REGISTRY`. Артефакты `ngram`/`pmi`/sklearn обучаются на `--corpus`
+  (или готовятся заранее: `python research/train_all.py`).
 - `app/policy.py` — порог и режимы выбора.
 - `app/humanizer.py` — оркестрация и сборка текста.
 - `app/cli.py` — командная строка.
@@ -56,9 +58,11 @@ python -m app.cli --input in.txt --output out.txt --model lesk --n 2 --mode 2 --
 ## Исследование
 
 Прогоны, метрики и выводы — в ветке `research` (каталог `research/`, итоги в
-`research/RESULTS.md`, все тексты и логи в `research/results/`). Текущий лидер по росту
-перплексии — `lesk` (n=1, порог 0.25); `ngram`/`pmi` в текущей постановке перплексию снижают
-(подробности и рекомендация режима 3 — в `research/RESULTS.md`).
+`research/RESULTS.md`, все тексты в `research/results/`). Главные итоги: по перплексии
+лучше всего `lesk` (n=1, порог 0.25, +24 ppl); реальный AI-детектор
+(`toiletsandpaper/russian-ai-text-detector-bert`) умеренными заменами синонимов не обманывается
+(лучший случай: `ngram` n=1 порог 0.15 — 4/30 текстов при 41% замен), порог 0.1 снимает
+детектор, но разрушает текст. Режим выбора (1/2/3) почти не влияет на результат.
 
 ## Ограничения
 
