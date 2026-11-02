@@ -1,0 +1,8 @@
+pandas>=2.2
+pyarrow>=15
+razdel>=0.5
+nltk>=3.9
+pymorphy3>=2.0
+pymorphy3-dicts-ru>=2.4
+numpy>=1.26
+requests>=2.31

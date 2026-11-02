@@ -1,0 +1,69 @@
+"""CLI-запуск гуманизатора: файл на вход, файл на выход, параметры флагами."""
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from .humanizer import Humanizer
+from .policy import ReplacementPolicy
+from .rankers import REGISTRY, build_ranker
+from .synonyms import SynonymProvider
+from .text import TextProcessor
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Собирает парсер аргументов командной строки."""
+    p = argparse.ArgumentParser(prog="humanizer", description="Гуманизация русского AI-текста заменой n-го токена на синоним")
+    p.add_argument("--input", "-i", required=True, help="входной файл с текстом (utf-8)")
+    p.add_argument("--output", "-o", required=True, help="выходной файл с результатом")
+    p.add_argument("--synonyms", default="data/synonims.parquet", help="parquet со словарём синонимов")
+    p.add_argument("--model", default="ngram", choices=sorted(REGISTRY), help="модель ранжирования кандидатов")
+    p.add_argument("--n", type=int, default=1, help="каждый n-й значимый токен (не стоп-слово)")
+    p.add_argument("--mode", type=int, default=2, choices=(1, 2), help="1 — случайный из прошедших порог, 2 — самый вероятный")
+    p.add_argument("--threshold", type=float, default=0.5, help="порог вероятности для замены")
+    p.add_argument("--seed", type=int, default=None, help="seed для режима 1")
+    p.add_argument("--context", default="sentence", choices=("sentence", "window"), help="контекст для ранжирования")
+    p.add_argument("--window", type=int, default=10, help="размер окна (слов) при --context window")
+    p.add_argument("--max-candidates", type=int, default=10, help="максимум кандидатов с оригиналом")
+    p.add_argument("--corpus", default=None, help="корпус (предложение в строке) для обучения ngram/pmi")
+    p.add_argument("--models-dir", default="models", help="каталог с артефактами моделей")
+    p.add_argument("--report", default=None, help="куда сохранить JSON-отчёт с решениями")
+    return p
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Читает файл, гуманизирует, пишет результат и опциональный отчёт."""
+    args = build_parser().parse_args(argv)
+    text = Path(args.input).read_text(encoding="utf-8")
+    processor = TextProcessor()
+    provider = SynonymProvider(args.synonyms)
+    ranker = build_ranker(args.model, models_dir=args.models_dir, corpus=args.corpus)
+    policy = ReplacementPolicy(threshold=args.threshold, mode=args.mode, seed=args.seed)
+    humanizer = Humanizer(
+        processor, provider, ranker, policy,
+        n=args.n, context=args.context, window=args.window, max_candidates=args.max_candidates,
+    )
+    result = humanizer.humanize(text)
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(result.text, encoding="utf-8")
+    replaced = sum(d.replaced for d in result.decisions)
+    print(f"model={args.model} n={args.n} mode={args.mode} threshold={args.threshold}")
+    print(f"candidates={len(result.decisions)} replaced={replaced}")
+    if args.report:
+        report = {
+            "params": vars(args),
+            "decisions": [
+                {"index": d.index, "original": d.original, "chosen": d.chosen, "replaced": d.replaced,
+                 "candidates": [{"word": w, "prob": p} for w, p in d.candidates]}
+                for d in result.decisions
+            ],
+        }
+        report_path = Path(args.report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

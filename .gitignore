@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+models/
+research/results/logs/
+*.onnx
+*.bin
+*.vec
+*.arpa
+nltk_data/
+.cache/
