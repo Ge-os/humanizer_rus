@@ -12,7 +12,7 @@ from .rankers import REGISTRY, build_ranker
 from .synonyms import SynonymProvider
 from .text import TextProcessor
 
-AI_STEPS = {"rhythm", "cliche", "polish"}
+AI_STEPS = {"rhythm", "cliche", "polish", "homoglyph", "synonym"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "4 — омоглифы, 5 — ритм предложений (LLM), 6 — замена AI-клише (LLM), "
                         "7 — полировка (LLM), 8 — цепочка AI-шагов из --chain")
     p.add_argument("--chain", default="cliche,rhythm,polish",
-                   help="шаги режима 8 через запятую: rhythm,cliche,polish")
+                   help="шаги режима 8 через запятую: rhythm,cliche,polish,homoglyph,synonym")
     p.add_argument("--threshold", type=float, default=0.5, help="порог вероятности для замены")
     p.add_argument("--seed", type=int, default=None, help="seed для режима 1")
     p.add_argument("--context", default="sentence", choices=("sentence", "window"), help="контекст для ранжирования")
@@ -41,15 +41,31 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _build_ai_transform(args: argparse.Namespace):
-    """Собирает LLM-трансформацию по режиму 5–8."""
-    from .ai_transforms import ChainTransformer, ClicheTransformer, PolishTransformer, RhythmTransformer
+    """Собирает LLM-трансформацию по режиму 5–8 (цепочка может включать homoglyph/synonym)."""
+    from .ai_transforms import (ChainTransformer, ClicheTransformer, HumanizerStep,
+                                PolishTransformer, RhythmTransformer)
     from .llm import LLMClient
 
     client = LLMClient()
+    processor = TextProcessor()
+
+    def humanizer_step(name: str):
+        if name == "homoglyph":
+            policy = ReplacementPolicy(threshold=args.threshold, mode=4, seed=args.seed)
+            humanizer = Humanizer(processor, None, None, policy, n=args.n)
+        else:
+            provider = SynonymProvider(args.synonyms)
+            ranker = build_ranker(args.model, models_dir=args.models_dir, corpus=args.corpus, synonyms=provider)
+            policy = ReplacementPolicy(threshold=args.threshold, mode=2, seed=args.seed)
+            humanizer = Humanizer(processor, provider, ranker, policy, n=args.n)
+        return HumanizerStep(name, humanizer)
+
     makers = {
         "rhythm": lambda: RhythmTransformer(client, seed=args.seed),
         "cliche": lambda: ClicheTransformer(client, seed=args.seed),
         "polish": lambda: PolishTransformer(client, seed=args.seed),
+        "homoglyph": lambda: humanizer_step("homoglyph"),
+        "synonym": lambda: humanizer_step("synonym"),
     }
     if args.mode == 5:
         return makers["rhythm"]()

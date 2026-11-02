@@ -17,18 +17,28 @@ _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 _CYR = re.compile(r"[а-яёА-ЯЁ]")
 
 CLICHES_RU = (
-    "в современном мире", "на сегодняшний день", "в настоящее время", "играет важную роль",
-    "играет ключевую роль", "следует отметить", "необходимо отметить", "стоит отметить",
-    "в заключение следует", "подводя итог", "как известно", "важно учитывать",
-    "представляет собой", "имеет важное значение", "широко используется", "ряд преимуществ",
-    "уникальная возможность", "динамично развивается", "постоянно развивается",
-    "неоспоримый факт", "на данном этапе", "осуществляется", "данный момент",
+    "в современном мире", "на сегодняшний день", "в настоящее время", "в мире, где",
+    "играет важную роль", "играет ключевую роль", "играет важнейшую роль", "служит основой",
+    "лежит в основе", "имеет важное значение", "имеет большое значение", "является важным",
+    "является ключевым", "является одним из", "представляет собой", "представляет важность",
+    "следует отметить", "необходимо отметить", "стоит отметить", "важно отметить", "важно отметить, что",
+    "необходимо учитывать", "важно учитывать", "следует учитывать", "как уже упоминалось",
+    "как известно", "прежде всего", "в заключение следует", "в заключение стоит", "в заключение необходимо",
+    "подводя итог", "итоге следует сказать", "таким образом можно сделать вывод",
+    "широко используется", "широкий спектр", "ряд преимуществ", "ряд факторов", "ряд возможностей",
+    "уникальная возможность", "неоспоримый факт", "динамично развивается", "постоянно развивается",
+    "на данном этапе", "осуществляется", "данный момент", "как правило", "в ряде случаев",
+    "в свою очередь", "более того", "кроме того", "вместе с тем", "наряду с этим", "в целом",
+    "позволяет значительно", "способствует развитию", "требует от специалистов", "век технологий",
+    "с каждым днём", "каждый день всё", "не только", "так или иначе", "по сути дела",
 )
 CLICHES_EN = (
     "delve into", "tapestry of", "in today's world", "it is important to note",
-    "plays a crucial role", "in conclusion", "landscape of", "realm of", "navigate the",
-    "a testament to", "pivotal", "showcasing", "multifaceted", "holistic approach",
-    "deep dive", "game-changer", "in the ever-evolving", "leverage",
+    "it is worth noting", "plays a crucial role", "plays a vital role", "in conclusion",
+    "landscape of", "realm of", "navigate the", "a testament to", "pivotal", "showcasing",
+    "multifaceted", "holistic approach", "deep dive", "game-changer", "in the ever-evolving",
+    "leverage", "when it comes to", "serves as a", "stands as a", "not only", "in light of",
+    "it's crucial to", "boasts a", "rich tapestry", "a myriad of", "furthermore",
 )
 
 
@@ -170,14 +180,20 @@ class ClicheTransformer(BaseAITransform):
 
 
 class PolishTransformer(BaseAITransform):
-    """Режим 7: мягкая академическая полировка с гейтом метрики (откат при ухудшении)."""
+    """Режим 7: мягкая академическая полировка с гейтом метрики и опциональным критиком.
+
+    critic(after_text) -> True, если текст принят (например, детектор больше не помечает
+    его как ИИ); при отказе модель правит ещё раз, до max_iter итераций.
+    """
 
     name = "polish"
 
     def __init__(self, client: LLMClient, seed: int | None = None,
-                 gate=None, chunk_chars: int = 3000) -> None:
+                 gate=None, chunk_chars: int = 3000, critic=None, max_iter: int = 3) -> None:
         super().__init__(client, seed)
         self.gate = gate  # Callable[[str, str], bool]: (до, после) -> принять?
+        self.critic = critic
+        self.max_iter = max_iter
         self.chunk_chars = chunk_chars
 
     def _prompt(self, chunk: str, ru: bool) -> str:
@@ -212,23 +228,47 @@ class PolishTransformer(BaseAITransform):
             out.append(buf)
         return out
 
+    def _retry_prompt(self, polished: str, ru: bool) -> str:
+        if ru:
+            return ("Текст всё ещё выглядит сгенерированным ИИ. Перепиши СИЛЬНЕЕ: измени порядок "
+                    "слов, длину и ритм предложений, убери штампы и канцелярит — но сохрани смысл, "
+                    "факты и числа. Верни ТОЛЬКО итоговый текст полностью:\n\n" + polished)
+        return ("The text still looks AI-generated. Rewrite it HARDER: change word order, sentence "
+                "length and rhythm, remove clichés — but keep meaning, facts and numbers. "
+                "Return STRICTLY the final text in full:\n\n" + polished)
+
     def transform(self, text: str) -> str:
         ru = is_russian(text)
         out = []
         for chunk in self._chunks(text, self.chunk_chars):
             polished = self.client.complete(self._prompt(chunk, ru)).strip()
+            for _ in range(self.max_iter - 1):
+                if not self.critic or self.critic(polished):
+                    break
+                polished = self.client.complete(self._retry_prompt(polished, ru)).strip()
             if self.gate and not self.gate(chunk, polished):
                 polished = chunk
             out.append(polished)
         return "\n".join(out)
 
 
+class HumanizerStep:
+    """Адаптер механической стадии (омоглифы/синонимы) для AI-цепочки (режим 8)."""
+
+    def __init__(self, name: str, humanizer) -> None:
+        self.name = name
+        self._humanizer = humanizer
+
+    def transform(self, text: str) -> str:
+        return self._humanizer.humanize(text).text
+
+
 class ChainTransformer(BaseAITransform):
-    """Режим 8: цепочка трансформаций, например cliche -> rhythm -> polish."""
+    """Режим 8: цепочка трансформаций, например cliche -> rhythm -> polish -> homoglyph."""
 
     name = "chain"
 
-    def __init__(self, client: LLMClient, steps: list[BaseAITransform], seed: int | None = None) -> None:
+    def __init__(self, client: LLMClient, steps: list, seed: int | None = None) -> None:
         super().__init__(client, seed)
         self.steps = steps
 

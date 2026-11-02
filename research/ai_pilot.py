@@ -34,13 +34,27 @@ def main() -> None:
     client = LLMClient()
     onnx = None if args.skip_onnx else OnnxDetector()
     ppl = PerplexityDetector(DATA / "corpus.txt")
+    critic = (lambda t: onnx.score(t) < 0.5) if onnx else None
+
+    def homoglyph_step():
+        from app.ai_transforms import HumanizerStep
+        from app.humanizer import Humanizer
+        from app.policy import ReplacementPolicy
+        from app.text import TextProcessor
+
+        return HumanizerStep("homoglyph", Humanizer(TextProcessor(), None, None,
+                                                    ReplacementPolicy(mode=4), n=2))
+
     configs = {
         "rhythm": lambda: RhythmTransformer(client, seed=42),
         "cliche": lambda: ClicheTransformer(client, seed=42),
         "polish": lambda: PolishTransformer(client, seed=42),
+        "polish_critic": lambda: PolishTransformer(client, seed=42, critic=critic, max_iter=3),
         "chain_crp": lambda: ChainTransformer(client, [ClicheTransformer(client, seed=42),
                                                        RhythmTransformer(client, seed=42),
                                                        PolishTransformer(client, seed=42)], seed=42),
+        "chain_ph": lambda: ChainTransformer(client, [PolishTransformer(client, seed=42),
+                                                      homoglyph_step()], seed=42),
     }
     rows = []
     for name, make in configs.items():

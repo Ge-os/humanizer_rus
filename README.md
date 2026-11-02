@@ -43,7 +43,8 @@ python -m app.cli --input in.txt --output out.txt --model lesk --n 2 --mode 2 --
 (`API_KEY`, `OPENAI_URL`, `MODEL`, `FALLBACK_MODEL`); ответы кэшируются в `models/llm_cache`.
 Примеры: `--mode 5` дробит длинные предложения и расширяет короткие; `--mode 6` заменяет
 AI-клише («в современном мире», «delve into»…); `--mode 7` — мягкая академическая полировка;
-`--mode 8` — цепочка `--chain cliche,rhythm,polish`.
+`--mode 8 --chain polish,homoglyph` — лучшая читаемая комбинация (23/30 ИИ-текстов снято
+с детектора); шаги цепочки: `rhythm`, `cliche`, `polish`, `homoglyph`, `synonym`.
 
 Алгоритм: токенизация (razdel) → отбор каждого n-го не-стоп-слова → кандидаты
 `[оригинал, синонимы...]` (синонимы склоняются pymorphy3 под форму оригинала) → ранжировщик
