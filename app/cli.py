@@ -20,7 +20,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--synonyms", default="data/synonims.parquet", help="parquet со словарём синонимов")
     p.add_argument("--model", default="ngram", choices=sorted(REGISTRY), help="модель ранжирования кандидатов")
     p.add_argument("--n", type=int, default=1, help="каждый n-й значимый токен (не стоп-слово)")
-    p.add_argument("--mode", type=int, default=2, choices=(1, 2), help="1 — случайный из прошедших порог, 2 — самый вероятный")
+    p.add_argument("--mode", type=int, default=2, choices=(1, 2, 3),
+                   help="1 — случайный из прошедших порог, 2 — самый вероятный, 3 — наименее вероятный")
     p.add_argument("--threshold", type=float, default=0.5, help="порог вероятности для замены")
     p.add_argument("--seed", type=int, default=None, help="seed для режима 1")
     p.add_argument("--context", default="sentence", choices=("sentence", "window"), help="контекст для ранжирования")

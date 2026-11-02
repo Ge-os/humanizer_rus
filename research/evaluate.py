@@ -118,23 +118,32 @@ class Evaluator:
         return rows
 
     def _save(self, rows: list[dict]) -> None:
-        """Сохраняет summary.csv и печатает агрегат по конфигурациям."""
+        """Сохраняет summary.csv (с сохранением прошлых прогонов) и печатает агрегат."""
         RESULTS.mkdir(parents=True, exist_ok=True)
-        fields = sorted({k for r in rows for k in r}, key=lambda k: (k != "config", k != "text_id", k))
-        with open(RESULTS / "summary.csv", "w", encoding="utf-8", newline="") as fh:
+        summary = RESULTS / "summary.csv"
+        merged: dict[tuple[str, str], dict] = {}
+        if summary.exists():
+            with open(summary, encoding="utf-8", newline="") as fh:
+                for old in csv.DictReader(fh):
+                    merged[(old["config"], old["text_id"])] = old
+        for r in rows:
+            merged[(r["config"], r["text_id"])] = {k: ("" if v is None else v) for k, v in r.items()}
+        all_rows = list(merged.values())
+        fields = sorted({k for r in all_rows for k in r}, key=lambda k: (k != "config", k != "text_id", k))
+        with open(summary, "w", encoding="utf-8", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=fields)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(all_rows)
         agg: dict[str, list[dict]] = {}
-        for r in rows:
+        for r in all_rows:
             agg.setdefault(r["config"], []).append(r)
         lines = ["| config | замен | ppl до | ppl после | Δppl | onnx до | onnx после | Δonnx |",
                  "|---|---|---|---|---|---|---|---|"]
-        for tag, group in agg.items():
+        for tag, group in sorted(agg.items()):
             def mean(key: str) -> float:
-                vals = [g[key] for g in group if key in g and g[key] is not None]
+                vals = [float(g[key]) for g in group if g.get(key) not in (None, "")]
                 return sum(vals) / len(vals) if vals else float("nan")
-            has_onnx = "onnx_before" in group[0]
+            has_onnx = "onnx_before" in group[0] and group[0].get("onnx_before") not in (None, "")
             line = (f"| {tag} | {mean('replaced_share'):.2f} | {mean('ppl_before'):.1f} | "
                     f"{mean('ppl_after'):.1f} | {mean('ppl_delta'):+.1f} |")
             if has_onnx:
@@ -156,12 +165,15 @@ def main() -> None:
     p.add_argument("--models", default="lesk,ngram,pmi")
     p.add_argument("--ns", default="1,2,3")
     p.add_argument("--thresholds", default="0.25,0.5")
+    p.add_argument("--modes", default="2", help="режимы выбора через запятую (1,2,3)")
     args = p.parse_args()
     models = args.models.split(",")
     ns = [int(x) for x in args.ns.split(",")]
     thresholds = [float(x) for x in args.thresholds.split(",")]
-    configs = [Config(model, n, 2, th) for model in models for n in ns for th in thresholds]
-    configs.append(Config(models[0], ns[min(1, len(ns) - 1)], 1, thresholds[0]))
+    modes = [int(x) for x in args.modes.split(",")]
+    configs = [Config(model, n, mode, th) for model in models for n in ns for mode in modes for th in thresholds]
+    if 1 not in modes:
+        configs.append(Config(models[0], ns[min(1, len(ns) - 1)], 1, thresholds[0]))
     ev = Evaluator(DATA / "ai_texts.jsonl", DATA / "corpus.txt")
     if args.limit_texts:
         ev.samples = ev.samples[: args.limit_texts]
