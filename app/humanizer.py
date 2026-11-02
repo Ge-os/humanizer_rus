@@ -1,8 +1,9 @@
-"""Оркестрация: выбор n-го токена, поиск синонимов, ранжирование и замена."""
+"""Оркестрация: выбор n-го токена, поиск синонимов, ранжирование и замена (или омоглифы)."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .homoglyphs import HomoglyphMapper
 from .policy import ReplacementPolicy
 from .rankers import BaseRanker
 from .synonyms import SynonymProvider
@@ -29,17 +30,18 @@ class HumanizeResult:
 
 
 class Humanizer:
-    """Заменяет каждый n-й значимый токен текста на подходящий синоним.
+    """Заменяет каждый n-й значимый токен текста на подходящий синоним или омоглиф.
 
-    Для токена строится список [оригинал, синонимы...], ранжировщик оценивает
-    его в контексте, политика решает, заменять ли слово.
+    Режимы 1–3: список [оригинал, синонимы...] ранжируется моделью в контексте,
+    политика решает, заменять ли слово. Режим 4: буквы токена меняются на визуальные
+    двойники из другого алфавита (омоглифы), словарь и модель не нужны.
     """
 
     def __init__(
         self,
         processor: TextProcessor,
-        provider: SynonymProvider,
-        ranker: BaseRanker,
+        provider: SynonymProvider | None,
+        ranker: BaseRanker | None,
         policy: ReplacementPolicy,
         n: int = 1,
         context: str = "sentence",
@@ -50,6 +52,8 @@ class Humanizer:
             raise ValueError("n must be >= 1")
         if context not in ("sentence", "window"):
             raise ValueError("context must be 'sentence' or 'window'")
+        if policy.mode != 4 and (provider is None or ranker is None):
+            raise ValueError("synonym modes require provider and ranker")
         self.processor = processor
         self.provider = provider
         self.ranker = ranker
@@ -58,6 +62,7 @@ class Humanizer:
         self.context = context
         self.window = window
         self.max_candidates = max_candidates
+        self.mapper = HomoglyphMapper()
 
     def _candidates(self, original: str) -> list[str]:
         """Кандидаты: оригинал + синонимы, склонённые под форму оригинала."""
@@ -76,24 +81,41 @@ class Humanizer:
         tok = tokens[index]
         return self.processor.sentence_bounds(text, tok.start, tok.end)
 
+    def _homoglyph(self, index: int, tokens) -> Decision | None:
+        """Режим 4: переводит токен на буквы другого алфавита (омоглифы)."""
+        original = tokens[index].text
+        if not self.mapper.changed(original):
+            return None
+        chosen = self.mapper.convert(original)
+        return Decision(index, original, chosen, True, [(original, 1.0), (chosen, 1.0)])
+
     def humanize(self, text: str) -> HumanizeResult:
         """Гуманизирует текст, сохраняя структуру и регистр."""
         tokens = self.processor.parse(text)
         decisions: list[Decision] = []
         replacements: list[tuple[int, int, str]] = []
         for index in self.processor.target_indices(tokens, self.n):
-            original = tokens[index].text
-            candidates = self._candidates(original)
-            if len(candidates) < 2:
+            if self.policy.mode == 4:
+                decision = self._homoglyph(index, tokens)
+            else:
+                decision = self._synonym(index, text, tokens)
+            if decision is None:
                 continue
-            left, right = self._context(text, tokens, index)
-            ranked = self.ranker.rank(left, right, candidates)
-            chosen = self.policy.pick(ranked, original)
-            replaced = chosen != original
-            decisions.append(Decision(index, original, chosen, replaced, ranked))
-            if replaced:
-                replacements.append((tokens[index].start, tokens[index].end, chosen))
+            decisions.append(decision)
+            if decision.replaced:
+                replacements.append((tokens[index].start, tokens[index].end, decision.chosen))
         out = text
         for start, end, word in reversed(replacements):
             out = out[:start] + word + out[end:]
         return HumanizeResult(out, decisions)
+
+    def _synonym(self, index: int, text: str, tokens) -> Decision | None:
+        """Режимы 1–3: ранжирование синонимов и выбор по политике."""
+        original = tokens[index].text
+        candidates = self._candidates(original)
+        if len(candidates) < 2:
+            return None
+        left, right = self._context(text, tokens, index)
+        ranked = self.ranker.rank(left, right, candidates)
+        chosen = self.policy.pick(ranked, original)
+        return Decision(index, original, chosen, chosen != original, ranked)

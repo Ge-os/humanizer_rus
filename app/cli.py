@@ -20,8 +20,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--synonyms", default="data/synonims.parquet", help="parquet со словарём синонимов")
     p.add_argument("--model", default="ngram", choices=sorted(REGISTRY), help="модель ранжирования кандидатов")
     p.add_argument("--n", type=int, default=1, help="каждый n-й значимый токен (не стоп-слово)")
-    p.add_argument("--mode", type=int, default=2, choices=(1, 2, 3),
-                   help="1 — случайный из прошедших порог, 2 — самый вероятный, 3 — наименее вероятный")
+    p.add_argument("--mode", type=int, default=2, choices=(1, 2, 3, 4),
+                   help="1 — случайный из прошедших порог, 2 — самый вероятный, 3 — наименее вероятный, "
+                        "4 — омоглифы (буквы латиница<->кириллица, без словаря и модели)")
     p.add_argument("--threshold", type=float, default=0.5, help="порог вероятности для замены")
     p.add_argument("--seed", type=int, default=None, help="seed для режима 1")
     p.add_argument("--context", default="sentence", choices=("sentence", "window"), help="контекст для ранжирования")
@@ -38,9 +39,12 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     text = Path(args.input).read_text(encoding="utf-8")
     processor = TextProcessor()
-    provider = SynonymProvider(args.synonyms)
-    ranker = build_ranker(args.model, models_dir=args.models_dir, corpus=args.corpus, synonyms=provider)
     policy = ReplacementPolicy(threshold=args.threshold, mode=args.mode, seed=args.seed)
+    if args.mode == 4:
+        provider, ranker = None, None
+    else:
+        provider = SynonymProvider(args.synonyms)
+        ranker = build_ranker(args.model, models_dir=args.models_dir, corpus=args.corpus, synonyms=provider)
     humanizer = Humanizer(
         processor, provider, ranker, policy,
         n=args.n, context=args.context, window=args.window, max_candidates=args.max_candidates,
