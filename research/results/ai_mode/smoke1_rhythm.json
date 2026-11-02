@@ -1,0 +1,22 @@
+{
+  "params": {
+    "input": "research\\results\\inputs\\smoke1.txt",
+    "output": "research\\results\\ai_mode\\smoke1_rhythm.txt",
+    "synonyms": "data/synonims.parquet",
+    "model": "ngram",
+    "n": 1,
+    "mode": 5,
+    "chain": "cliche,rhythm,polish",
+    "threshold": 0.5,
+    "seed": null,
+    "context": "sentence",
+    "window": 10,
+    "max_candidates": 10,
+    "corpus": null,
+    "models_dir": "models",
+    "report": "research\\results\\ai_mode\\smoke1_rhythm.json"
+  },
+  "steps": [
+    "rhythm"
+  ]
+}
