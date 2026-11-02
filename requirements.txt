@@ -6,3 +6,8 @@ pymorphy3>=2.0
 pymorphy3-dicts-ru>=2.4
 numpy>=1.26
 requests>=2.31
+# research: детектор и sklearn-модели
+scikit-learn>=1.5
+onnxruntime>=1.19
+tokenizers>=0.20
+huggingface_hub>=0.26

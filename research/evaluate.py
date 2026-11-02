@@ -67,7 +67,8 @@ class Evaluator:
 
     def _ranker(self, model: str):
         if model not in self.rankers:
-            self.rankers[model] = build_ranker(model, models_dir=ROOT / "models", corpus=self.corpus)
+            self.rankers[model] = build_ranker(model, models_dir=ROOT / "models",
+                                               corpus=self.corpus, synonyms=self.provider)
         return self.rankers[model]
 
     def run(self, configs: list[Config]) -> list[dict]:

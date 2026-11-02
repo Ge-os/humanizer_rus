@@ -260,10 +260,246 @@ class PMIRanker(BaseRanker):
         return out
 
 
+class SklearnRankerBase(BaseRanker):
+    """Классификатор «слово подходит контексту» на BoW(left + кандидат + right).
+
+    Обучение: настоящие слова корпуса (метка 1) против случайных слов (метка 0).
+    Скор — логит «подходит»; rank() переводит его в вероятности через softmax.
+    """
+
+    needs_corpus = True
+
+    def __init__(self, model_path: str | Path | None = None, corpus: str | Path | None = None,
+                 synonyms=None, window: int = 3, max_features: int = 5000,
+                 max_positions: int = 30000, seed: int = 42, **_: object) -> None:
+        self.window = window
+        self.max_features = max_features
+        self.max_positions = max_positions
+        self.seed = seed
+        self._vectorizer = None
+        self._clf = None
+        if model_path and Path(model_path).exists():
+            self.load(model_path)
+        elif corpus:
+            self.fit(_corpus_sentences(corpus), synonyms)
+            if model_path:
+                self.save(model_path)
+
+    def _doc(self, left: str, right: str, cand: str) -> str:
+        return " ".join(_words(left)[-self.window :] + [cand.lower().replace("ё", "е")] + _words(right)[: self.window])
+
+    def _make_clf(self):  # noqa: ANN201 - тип зависит от подкласса
+        raise NotImplementedError
+
+    def _fit_clf(self, x, labels) -> None:  # noqa: ANN001
+        self._clf = self._make_clf()
+        self._clf.fit(x, labels)
+
+    def _features(self, x):  # noqa: ANN001, ANN201
+        return x
+
+    def _margin(self, proba) -> float:  # noqa: ANN001
+        """Логит класса 1 из predict_proba (переопределяется для линейных моделей)."""
+        import math
+
+        p1, p0 = max(float(proba[1]), 1e-9), max(float(proba[0]), 1e-9)
+        return math.log(p1) - math.log(p0)
+
+    def fit(self, sentences: list[list[str]], synonyms=None) -> None:
+        """Учит TF-IDF + классификатор на парах (контекст, слово) -> подходит/нет."""
+        import random as _random
+
+        from sklearn.feature_extraction.text import TfidfVectorizer
+
+        rng = _random.Random(self.seed)
+        vocab = sorted({w for s in sentences for w in s if len(w) > 2})
+        docs: list[str] = []
+        labels: list[int] = []
+        positions = [(s, i) for s in sentences for i, w in enumerate(s) if len(w) > 2]
+        rng.shuffle(positions)
+        for words, i in positions[: self.max_positions]:
+            left = " ".join(words[max(0, i - self.window) : i])
+            right = " ".join(words[i + 1 : i + 1 + self.window])
+            docs.append(self._doc(left, right, words[i]))
+            labels.append(1)
+            for _ in range(2):
+                docs.append(self._doc(left, right, rng.choice(vocab)))
+                labels.append(0)
+        self._vectorizer = TfidfVectorizer(max_features=self.max_features, ngram_range=(1, 2))
+        x = self._vectorizer.fit_transform(docs)
+        self._fit_clf(x, labels)
+
+    def save(self, path: str | Path) -> None:
+        import pickle
+
+        with open(path, "wb") as fh:
+            pickle.dump({"vectorizer": self._vectorizer, "clf": self._clf,
+                         "extra": self._extra_state(),
+                         "window": self.window, "max_features": self.max_features}, fh)
+
+    def _extra_state(self):  # noqa: ANN201
+        return None
+
+    def _load_extra(self, state) -> None:  # noqa: ANN001
+        pass
+
+    def load(self, path: str | Path) -> None:
+        import pickle
+
+        with open(path, "rb") as fh:
+            data = pickle.load(fh)
+        self._vectorizer, self._clf = data["vectorizer"], data["clf"]
+        self._load_extra(data.get("extra"))
+        self.window, self.max_features = data["window"], data["max_features"]
+
+    def score(self, left: str, right: str, candidates: list[str]) -> list[float]:
+        docs = [self._doc(left, right, c) for c in candidates]
+        x = self._features(self._vectorizer.transform(docs))
+        if hasattr(self._clf, "predict_proba"):
+            return [self._margin(p) for p in self._clf.predict_proba(x)]
+        return [float(v) for v in self._clf.decision_function(x)]
+
+
+class NbRanker(SklearnRankerBase):
+    """Наивный Байес (MultinomialNB) над BoW окна."""
+
+    name = "nb"
+
+    def _make_clf(self):
+        from sklearn.naive_bayes import MultinomialNB
+
+        return MultinomialNB(alpha=0.1)
+
+
+class LogregRanker(SklearnRankerBase):
+    """Логистическая регрессия над BoW окна."""
+
+    name = "logreg"
+
+    def _make_clf(self):
+        from sklearn.linear_model import LogisticRegression
+
+        return LogisticRegression(max_iter=1000, C=1.0)
+
+
+class SvmRanker(SklearnRankerBase):
+    """LinearSVC над BoK окна (скор — decision_function)."""
+
+    name = "svm"
+
+    def _make_clf(self):
+        from sklearn.svm import LinearSVC
+
+        return LinearSVC(C=0.5, max_iter=2000)
+
+
+class RfRanker(SklearnRankerBase):
+    """Random Forest над BoW окна (ограниченная глубина — иначе модель не сериализуется)."""
+
+    name = "rf"
+
+    def _make_clf(self):
+        from sklearn.ensemble import RandomForestClassifier
+
+        return RandomForestClassifier(n_estimators=30, max_depth=8, n_jobs=-1, random_state=self.seed)
+
+
+class GbmRanker(SklearnRankerBase):
+    """Gradient Boosting (HistGradientBoosting) поверх SVD-признаков окна."""
+
+    name = "gbm"
+
+    def _make_clf(self):
+        from sklearn.ensemble import HistGradientBoostingClassifier
+
+        return HistGradientBoostingClassifier(max_iter=200, random_state=self.seed)
+
+    def _fit_clf(self, x, labels) -> None:  # noqa: ANN001
+        from sklearn.decomposition import TruncatedSVD
+
+        self._svd = TruncatedSVD(n_components=128, random_state=self.seed)
+        self._clf = self._make_clf()
+        self._clf.fit(self._svd.fit_transform(x), labels)
+
+    def _features(self, x):  # noqa: ANN001, ANN201
+        return self._svd.transform(x)
+
+    def _extra_state(self):  # noqa: ANN201
+        return self._svd
+
+    def _load_extra(self, state) -> None:  # noqa: ANN001
+        self._svd = state
+
+
+class LsaRanker(BaseRanker):
+    """LSA: косинус между вектором кандидата и центроидом контекста в TF-IDF+SVD пространстве."""
+
+    name = "lsa"
+    needs_corpus = True
+
+    def __init__(self, model_path: str | Path | None = None, corpus: str | Path | None = None,
+                 n_components: int = 128, **_: object) -> None:
+        self._tfidf = None
+        self._svd = None
+        if model_path and Path(model_path).exists():
+            self.load(model_path)
+        elif corpus:
+            self.fit(_corpus_sentences(corpus))
+            if model_path:
+                self.save(model_path)
+
+    def fit(self, sentences: list[list[str]]) -> None:
+        from sklearn.decomposition import TruncatedSVD
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.preprocessing import normalize
+
+        self._normalize = normalize
+        self._tfidf = TfidfVectorizer(max_features=10000)
+        x = self._tfidf.fit_transform(" ".join(s) for s in sentences)
+        self._svd = TruncatedSVD(n_components=128, random_state=42)
+        self._svd.fit(x)
+
+    def save(self, path: str | Path) -> None:
+        import pickle
+
+        with open(path, "wb") as fh:
+            pickle.dump({"tfidf": self._tfidf, "svd": self._svd}, fh)
+
+    def load(self, path: str | Path) -> None:
+        import pickle
+
+        from sklearn.preprocessing import normalize
+
+        self._normalize = normalize
+        with open(path, "rb") as fh:
+            data = pickle.load(fh)
+        self._tfidf, self._svd = data["tfidf"], data["svd"]
+
+    def _vec(self, text: str):
+        return self._svd.transform(self._tfidf.transform([text]))
+
+    def score(self, left: str, right: str, candidates: list[str]) -> list[float]:
+        import numpy as np
+
+        ctx_words = _words(left)[-6:] + _words(right)[:6]
+        ctx = self._normalize(self._vec(" ".join(ctx_words)))
+        out = []
+        for cand in candidates:
+            vec = self._normalize(self._vec(cand.lower().replace("ё", "е")))
+            out.append(float(np.dot(ctx, vec.T)[0, 0]))
+        return out
+
+
 REGISTRY: dict[str, type[BaseRanker]] = {
     LeskRanker.name: LeskRanker,
     NgramRanker.name: NgramRanker,
     PMIRanker.name: PMIRanker,
+    NbRanker.name: NbRanker,
+    LogregRanker.name: LogregRanker,
+    SvmRanker.name: SvmRanker,
+    RfRanker.name: RfRanker,
+    GbmRanker.name: GbmRanker,
+    LsaRanker.name: LsaRanker,
 }
 
 
