@@ -75,8 +75,9 @@ class Evaluator:
         """Прогоняет все конфигурации, возвращает и сохраняет сводные метрики."""
         rows: list[dict] = []
         for cfg in configs:
+            ranker = self._ranker(cfg.model) if cfg.mode != 4 else None
             humanizer = Humanizer(
-                self.processor, self.provider, self._ranker(cfg.model),
+                self.processor, self.provider, ranker,
                 ReplacementPolicy(threshold=cfg.threshold, mode=cfg.mode, seed=42),
                 n=cfg.n, context="sentence",
             )
@@ -173,7 +174,7 @@ def main() -> None:
     thresholds = [float(x) for x in args.thresholds.split(",")]
     modes = [int(x) for x in args.modes.split(",")]
     configs = [Config(model, n, mode, th) for model in models for n in ns for mode in modes for th in thresholds]
-    if 1 not in modes:
+    if 1 not in modes and 4 not in modes:
         configs.append(Config(models[0], ns[min(1, len(ns) - 1)], 1, thresholds[0]))
     ev = Evaluator(DATA / "ai_texts.jsonl", DATA / "corpus.txt")
     if args.limit_texts:
