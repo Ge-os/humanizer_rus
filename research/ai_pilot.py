@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "research"))
 
-from app.ai_transforms import ChainTransformer, ClicheTransformer, PolishTransformer, RhythmTransformer  # noqa: E402
+from app.ai_transforms import (BackTranslationTransformer, ChainTransformer, ClicheTransformer,
+                               PolishTransformer, RhythmTransformer)  # noqa: E402
 from app.llm import LLMClient  # noqa: E402
 from detectors import OnnxDetector, PerplexityDetector  # noqa: E402
 
@@ -28,6 +29,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Пилот AI-режимов")
     ap.add_argument("--limit", type=int, default=4, help="число текстов")
     ap.add_argument("--skip-onnx", action="store_true", help="без onnx-детектора")
+    ap.add_argument("--configs", default="", help="фильтр конфигуров через запятую (пусто = все)")
     args = ap.parse_args()
 
     samples = [json.loads(l) for l in (DATA / "ai_texts.jsonl").read_text(encoding="utf-8").splitlines() if l][: args.limit]
@@ -55,7 +57,11 @@ def main() -> None:
                                                        PolishTransformer(client, seed=42)], seed=42),
         "chain_ph": lambda: ChainTransformer(client, [PolishTransformer(client, seed=42),
                                                       homoglyph_step()], seed=42),
+        "backtranslate": lambda: BackTranslationTransformer(client, seed=42),
     }
+    if args.configs:
+        wanted = {s.strip() for s in args.configs.split(",")}
+        configs = {k: v for k, v in configs.items() if k in wanted}
     rows = []
     for name, make in configs.items():
         transform = make()
@@ -76,10 +82,19 @@ def main() -> None:
             print(f"{name}/{s['id']}: {row['sec']}s ppl {row['ppl_before']}->{row['ppl_after']} "
                   f"onnx {row.get('onnx_before')}-{row.get('onnx_after')}", flush=True)
         RESULTS.mkdir(parents=True, exist_ok=True)
-        with open(RESULTS / "ai_pilot.csv", "w", encoding="utf-8", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        merged = {}
+        csv_path = RESULTS / "ai_pilot.csv"
+        if csv_path.exists():
+            with open(csv_path, encoding="utf-8", newline="") as fh:
+                for old in csv.DictReader(fh):
+                    merged[(old["config"], old["text_id"])] = old
+        for r in rows:
+            merged[(r["config"], r["text_id"])] = {k: ("" if v is None else v) for k, v in r.items()}
+        all_rows = list(merged.values())
+        with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(all_rows[0]))
             w.writeheader()
-            w.writerows(rows)
+            w.writerows(all_rows)
     print("\n=== сводка (среднее) ===")
     for name in configs:
         g = [r for r in rows if r["config"] == name]

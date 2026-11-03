@@ -10,3 +10,4 @@ research/results/logs/
 *.arpa
 nltk_data/
 .cache/
+research/data/*.parquet

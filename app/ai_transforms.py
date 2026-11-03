@@ -31,6 +31,11 @@ CLICHES_RU = (
     "в свою очередь", "более того", "кроме того", "вместе с тем", "наряду с этим", "в целом",
     "позволяет значительно", "способствует развитию", "требует от специалистов", "век технологий",
     "с каждым днём", "каждый день всё", "не только", "так или иначе", "по сути дела",
+    "это позволяет", "что позволяет", "что способствует", "важно отметить, что", "важно отметить что",
+    "важно помнить", "важно помнить, что", "очень важно", "подчеркивает важность",
+    "стоит обратить внимание", "стоит обратить внимание на", "также стоит", "однако стоит",
+    "однако несмотря на", "такие как", "таких как", "составляет около", "можно увидеть",
+    "не является", "направлены на", "является важным", "ключевую роль", "важно чтобы",
 )
 CLICHES_EN = (
     "delve into", "tapestry of", "in today's world", "it is important to note",
@@ -261,6 +266,72 @@ class HumanizerStep:
 
     def transform(self, text: str) -> str:
         return self._humanizer.humanize(text).text
+
+
+class BackTranslationTransformer(BaseAITransform):
+    """Режим 9 / шаг backtranslate: перевод туда-обратно (RU→EN→RU) как ломка статистики.
+
+    Использует Helsinki-NLP/opus-mt (transformers, ленивая загрузка); если модели или
+    зависимости недоступны — back-translation через LLM-промпт.
+    """
+
+    name = "backtranslate"
+
+    def __init__(self, client: LLMClient, seed: int | None = None,
+                 max_chars: int = 1500, use_llm: bool = False) -> None:
+        super().__init__(client, seed)
+        self.max_chars = max_chars
+        self._use_llm = use_llm
+        self._models = None
+
+    def _load(self) -> None:
+        if self._models is not None or self._use_llm:
+            return
+        try:
+            from transformers import MarianMTModel, MarianTokenizer
+
+            models = {}
+            for tag in ("ru-en", "en-ru"):
+                name = f"Helsinki-NLP/opus-mt-{tag}"
+                models[tag] = (MarianTokenizer.from_pretrained(name), MarianMTModel.from_pretrained(name))
+            self._models = models
+        except Exception:  # noqa: BLE001 - нет torch/моделей → LLM-fallback
+            self._use_llm = True
+
+    def _translate(self, tag: str, text: str) -> str:
+        import torch
+
+        tokenizer, model = self._models[tag]
+        torch.manual_seed(self._rng.randrange(2**31))
+        batch = tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=400)
+        with torch.no_grad():
+            out = model.generate(**batch, num_beams=1, do_sample=True, temperature=0.9,
+                                 max_new_tokens=400)
+        return tokenizer.decode(out[0], skip_special_tokens=True)
+
+    def _llm_bt(self, chunk: str, ru: bool) -> str:
+        if ru:
+            prompt = ("Переведи текст на английский язык, а затем обратно на русский — как "
+                      "естественный человеческий перевод, слегка меняя порядок слов и ритм. "
+                      "Сохрани смысл, факты и числа. Верни ТОЛЬКО итоговый русский текст:\n\n" + chunk)
+        else:
+            prompt = ("Translate the text into Russian and then back into English — as natural "
+                      "human translation, slightly changing word order and rhythm. Keep meaning, "
+                      "facts and numbers. Return STRICTLY the final English text:\n\n" + chunk)
+        return self.client.complete(prompt).strip()
+
+    def transform(self, text: str) -> str:
+        self._load()
+        ru = is_russian(text)
+        out = []
+        for sent in split_sentences(text):
+            if self._use_llm:
+                chosen = self._llm_bt(sent, ru) if len(sent) <= self.max_chars else sent
+            else:
+                mid = self._translate("ru-en", sent) if ru else self._translate("en-ru", sent)
+                chosen = self._translate("en-ru", mid) if ru else self._translate("ru-en", mid)
+            out.append(self._keep_punct(sent, chosen) or sent)
+        return " ".join(out)
 
 
 class ChainTransformer(BaseAITransform):

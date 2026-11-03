@@ -43,7 +43,7 @@ class LLMTraceClient:
                         "offset": offset, "length": length},
                 timeout=120,
             )
-            if resp.status_code == 429:
+            if resp.status_code == 429 or resp.status_code >= 500:
                 time.sleep(5 * (attempt + 1))
                 continue
             resp.raise_for_status()

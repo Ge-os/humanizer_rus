@@ -5,14 +5,15 @@ import argparse
 import json
 from pathlib import Path
 
-from .ai_transforms import ClicheTransformer, PolishTransformer, RhythmTransformer
+from .ai_transforms import (BackTranslationTransformer, ClicheTransformer,
+                            PolishTransformer, RhythmTransformer)
 from .humanizer import Humanizer
 from .policy import ReplacementPolicy
 from .rankers import REGISTRY, build_ranker
 from .synonyms import SynonymProvider
 from .text import TextProcessor
 
-AI_STEPS = {"rhythm", "cliche", "polish", "homoglyph", "synonym"}
+AI_STEPS = {"rhythm", "cliche", "polish", "homoglyph", "synonym", "backtranslate"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,12 +24,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--synonyms", default="data/synonims.parquet", help="parquet со словарём синонимов")
     p.add_argument("--model", default="ngram", choices=sorted(REGISTRY), help="модель ранжирования кандидатов")
     p.add_argument("--n", type=int, default=1, help="каждый n-й значимый токен (не стоп-слово)")
-    p.add_argument("--mode", type=int, default=2, choices=(1, 2, 3, 4, 5, 6, 7, 8),
+    p.add_argument("--mode", type=int, default=2, choices=(1, 2, 3, 4, 5, 6, 7, 8, 9),
                    help="1–3 — выбор синонима (случайный/вероятный/наименее вероятный), "
                         "4 — омоглифы, 5 — ритм предложений (LLM), 6 — замена AI-клише (LLM), "
-                        "7 — полировка (LLM), 8 — цепочка AI-шагов из --chain")
+                        "7 — полировка (LLM), 8 — цепочка AI-шагов из --chain, "
+                        "9 — back-translation (opus-mt или LLM)")
     p.add_argument("--chain", default="cliche,rhythm,polish",
-                   help="шаги режима 8 через запятую: rhythm,cliche,polish,homoglyph,synonym")
+                   help="шаги режима 8 через запятую: rhythm,cliche,polish,homoglyph,synonym,backtranslate")
+    p.add_argument("--critic", default="none", choices=("none", "onnx"),
+                   help="детектор-критик для полировки (режимы 7/8): onnx — итеративно правит, "
+                        "пока детектор не перестанет помечать текст как ИИ")
     p.add_argument("--threshold", type=float, default=0.5, help="порог вероятности для замены")
     p.add_argument("--seed", type=int, default=None, help="seed для режима 1")
     p.add_argument("--context", default="sentence", choices=("sentence", "window"), help="контекст для ранжирования")
@@ -42,12 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _build_ai_transform(args: argparse.Namespace):
     """Собирает LLM-трансформацию по режиму 5–8 (цепочка может включать homoglyph/synonym)."""
-    from .ai_transforms import (ChainTransformer, ClicheTransformer, HumanizerStep,
-                                PolishTransformer, RhythmTransformer)
+    from .ai_transforms import (BackTranslationTransformer, ChainTransformer, ClicheTransformer,
+                                HumanizerStep, PolishTransformer, RhythmTransformer)
     from .llm import LLMClient
 
     client = LLMClient()
     processor = TextProcessor()
+    critic = None
+    if args.critic == "onnx":
+        from .critic import AICritic
+
+        critic = AICritic()
 
     def humanizer_step(name: str):
         if name == "homoglyph":
@@ -63,9 +73,10 @@ def _build_ai_transform(args: argparse.Namespace):
     makers = {
         "rhythm": lambda: RhythmTransformer(client, seed=args.seed),
         "cliche": lambda: ClicheTransformer(client, seed=args.seed),
-        "polish": lambda: PolishTransformer(client, seed=args.seed),
+        "polish": lambda: PolishTransformer(client, seed=args.seed, critic=critic, max_iter=3),
         "homoglyph": lambda: humanizer_step("homoglyph"),
         "synonym": lambda: humanizer_step("synonym"),
+        "backtranslate": lambda: BackTranslationTransformer(client, seed=args.seed),
     }
     if args.mode == 5:
         return makers["rhythm"]()
@@ -73,6 +84,8 @@ def _build_ai_transform(args: argparse.Namespace):
         return makers["cliche"]()
     if args.mode == 7:
         return makers["polish"]()
+    if args.mode == 9:
+        return makers["backtranslate"]()
     names = [s.strip() for s in args.chain.split(",") if s.strip()]
     unknown = [s for s in names if s not in AI_STEPS]
     if unknown or not names:

@@ -42,44 +42,16 @@ class PerplexityDetector:
 class OnnxDetector:
     """Вероятность, что русский текст написала LLM: toiletsandpaper/russian-ai-text-detector-*.
 
-    Модель скачивается с HF один раз (int8 ONNX ~30 МБ) и работает на CPU.
+    Тонкая обёртка над app.critic.AICritic (общий код детектора живёт в app/).
     """
 
     name = "onnx"
 
     def __init__(self, model_id: str = "toiletsandpaper/russian-ai-text-detector-bert") -> None:
-        os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
-        import numpy as np
-        import onnxruntime as ort
-        from huggingface_hub import snapshot_download
-        from tokenizers import Tokenizer
+        from app.critic import AICritic
 
-        self._np = np
-        path = snapshot_download(model_id, allow_patterns=["inference.json", "model.onnx*", "tokenizer.json"])
-        with open(f"{path}/inference.json", encoding="utf-8") as fh:
-            self.spec = json.load(fh)
-        self._session = ort.InferenceSession(f"{path}/{self.spec['file']}", providers=["CPUExecutionProvider"])
-        self._tokenizer = Tokenizer.from_file(f"{path}/{self.spec['tokenizer']}")
-        self._tokenizer.no_truncation()
-        self._tokenizer.no_padding()
+        self._critic = AICritic(model_id=model_id)
 
     def score(self, text: str) -> float:
         """Вероятность ИИ-происхождения текста (0..1), порог 0.5."""
-        np = self._np
-        spec = self.spec
-        text = text[: spec["max_chars"]]
-        for rule in spec["normalize"]:
-            text = re.sub(rule["pattern"], rule["replacement"], text, flags=re.MULTILINE)
-        ids = self._tokenizer.encode(text.strip(), add_special_tokens=False).ids
-        prefix, suffix = [spec["cls_id"]], [spec["sep_id"]]
-        width = spec.get("read_length", spec["max_length"]) - len(prefix) - len(suffix)
-        windows = [ids[i : i + width] for i in range(0, max(len(ids), 1), width)][: spec["max_windows"]]
-        windows = [[*prefix, *w, *suffix] for w in windows]
-        batch = np.full((len(windows), max(map(len, windows))), spec["pad_id"], dtype=np.int64)
-        mask = np.zeros_like(batch)
-        for k, w in enumerate(windows):
-            batch[k, : len(w)] = w
-            mask[k, : len(w)] = 1
-        logits = self._session.run([spec["output"]], {"input_ids": batch, "attention_mask": mask})[0]
-        p = np.exp(logits - logits.max(axis=1, keepdims=True))
-        return float((p[:, spec["labels"].index("ai")] / p.sum(axis=1)).mean())
+        return self._critic.score(text)
